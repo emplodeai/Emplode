@@ -1,4 +1,4 @@
-<h1 align="center">Emplode</h1>
+<h1 align="center">/Emplode.</h1>
 
 <p align="center">
     <a href="https://discord.gg/uZmvdFpSyW">
