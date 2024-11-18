@@ -72,6 +72,7 @@ Or run any Hugging Face model **locally** by using its repo ID (e.g. "tiiuae/fal
 
 ```shell
 emplode --model nvidia/Llama-3.1-Nemotron-70B-Instruct
+emplode --model meta-llama/Llama-3.2-11B-Vision-Instruct
 ```
 
 
