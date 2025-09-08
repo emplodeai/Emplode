@@ -52,7 +52,7 @@ class Emplode:
 
   def __init__(self):
     self.messages = []
-    self.temperature = 0.001
+    self.temperature = 1.0
     self.api_key = None
     self.auto_run = False
     self.model = "gpt-5"
@@ -296,7 +296,6 @@ class Emplode:
           model=self.model,
           messages=messages,
           functions=[function_schema],
-          temperature=self.temperature,
           stream=True,
         )
         break
