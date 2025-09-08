@@ -1,1 +1,1 @@
-This file will be updated soon!
+Emplode now uses OpenAI GPT-5 exclusively. Set `OPENAI_API_KEY` and run `emplode` to start. Only the `-y/--yes` flag is supported for auto-running code.
