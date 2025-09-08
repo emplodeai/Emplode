@@ -10,7 +10,7 @@
 
 <br>
 
-**Emplode** Agent performs actions on your system by executing code locally, It can also serve as an agentic framework for your disposable sandbox projects. You can chat with Emplode in your terminal by running `emplode` after installing.
+**Emplode** performs actions on your system by executing code locally. You can chat with Emplode in your terminal by running `emplode` after installing.
 
 This provides a natural-language interface to your system's general-purpose capabilities:
 
@@ -46,35 +46,11 @@ emplode.chat() # Starts an interactive chat
 
 ## Commands
 
-### Change the Model
+Emplode now uses a single model, `gpt-5`, everywhere. There is no model selection and no local model support.
 
-For `gpt-3.5-turbo`, use fast mode:
-
-```shell
-emplode --fast
-```
-
-In Python, you will need to set the model manually:
-
-```python
-emplode.model = "gpt-3.5-turbo"
-```
-
-### Running Emplode locally
-
-You can run `emplode` in local mode from the command line to use `Code Llama`:
-
-```shell
-emplode --local
-```
-
-Or run any Hugging Face model **locally** by using its repo ID (e.g. "tiiuae/falcon-180B"):
-
-```shell
-emplode --model nvidia/Llama-3.1-Nemotron-70B-Instruct
-emplode --model meta-llama/Llama-3.2-11B-Vision-Instruct
-```
-
+- `-y`, `--yes`: execute code without user confirmation
+- `-d`, `--debug`: prints extra information
+- `--version`: display current Emplode version
 
 ### Configuration with .env
 
@@ -84,15 +60,13 @@ Here's a sample .env configuration:
 
 ```
 EMPLODE_CLI_AUTO_RUN=False
-EMPLODE_CLI_FAST_MODE=False
-EMPLODE_CLI_LOCAL_RUN=False
 EMPLODE_CLI_DEBUG=False
 ```
 
-You can modify these values in the .env file to change the default behavior of the Emplode
+You can modify these values in the .env file to change the default behavior of Emplode.
 
 ## How Does it Work?
 
-Emplode equips a [function-calling model](https://platform.openai.com/docs/guides/gpt/function-calling) with an `exec()` function, which accepts a `language` (like "Python" or "JavaScript") and `code` to run.
+Emplode equips a function-calling model with an `exec()` function, which accepts a `language` (like "Python" or "JavaScript") and `code` to run.
 
 <br>
