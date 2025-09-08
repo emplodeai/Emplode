@@ -9,6 +9,7 @@ import platform
 from openai import OpenAI
 import getpass
 import tiktoken
+from rich import print as rprint
 from rich.markdown import Markdown
 
 function_schema = {
@@ -65,7 +66,7 @@ class Emplode:
       return
 
     welcome = f"> Model set to `{self.model.upper()}`\n\n{confirm_mode_message}".strip()
-    print(Markdown(welcome), '')
+    rprint(Markdown(welcome))
 
     if message:
       self.messages.append({"role": "user", "content": message})
@@ -93,7 +94,7 @@ class Emplode:
     if self.api_key is None:
       self.api_key = os.environ.get('OPENAI_API_KEY')
       if not self.api_key:
-        print(Markdown(missing_api_key_message))
+        rprint(Markdown(missing_api_key_message))
         response = input("OpenAI API key: ").strip()
         if not response:
           return False
@@ -135,111 +136,188 @@ class Emplode:
   def respond(self):
     messages = self._approx_trim()
 
-    response = self.client.chat.completions.create(
-      model=self.model,
-      messages=messages,
-      tools=[{"type": "function", "function": function_schema}],
-      temperature=self.temperature,
-      stream=True,
-    )
+    try:
+      response = self.client.chat.completions.create(
+        model=self.model,
+        messages=messages,
+        tools=[{"type": "function", "function": function_schema}],
+        stream=True,
+      )
+      streaming_mode = True
+    except Exception:
+      response = self.client.chat.completions.create(
+        model=self.model,
+        messages=messages,
+        tools=[{"type": "function", "function": function_schema}],
+        stream=False,
+      )
+      streaming_mode = False
 
-    self.messages.append({"role": "assistant"})
-    in_tool_call = False
-    tool_call_id = None
-    tool_name = None
-    tool_args_buffer = ""
-    self.active_block = None
+    if streaming_mode:
+      self.messages.append({"role": "assistant"})
+      in_tool_call = False
+      tool_call_id = None
+      tool_name = None
+      tool_args_buffer = ""
+      self.active_block = None
 
-    for chunk in response:
-      choice = getattr(chunk, 'choices', [None])[0]
-      if not choice:
-        continue
-      delta = choice.delta
-      if delta.content:
-        if "content" not in self.messages[-1]:
-          self.messages[-1]["content"] = ""
-        self.messages[-1]["content"] += delta.content
+      for chunk in response:
+        choice = getattr(chunk, 'choices', [None])[0]
+        if not choice:
+          continue
+        delta = choice.delta
+        if delta.content:
+          if "content" not in self.messages[-1]:
+            self.messages[-1]["content"] = ""
+          self.messages[-1]["content"] += delta.content
 
-      if delta.tool_calls:
-        for tc in delta.tool_calls:
-          if getattr(tc, 'id', None):
-            tool_call_id = tc.id
-          if tc.function and getattr(tc.function, 'name', None):
-            tool_name = tc.function.name
-          if tc.function and getattr(tc.function, 'arguments', None):
-            tool_args_buffer += tc.function.arguments
-        if not in_tool_call:
-          self.end_active_block()
-          self.active_block = CodeBlock()
-          in_tool_call = True
-        if "function_call" not in self.messages[-1]:
-          self.messages[-1]["function_call"] = {}
-        self.messages[-1]["function_call"]["name"] = tool_name or "run_code"
-        self.messages[-1]["function_call"]["arguments"] = tool_args_buffer
-        try:
-          parsed = json.loads(tool_args_buffer) if tool_args_buffer else None
-        except Exception:
-          parsed = None
-        self.messages[-1]["function_call"]["parsed_arguments"] = parsed
-        self.messages[-1]["tool_calls"] = [{
-          "id": tool_call_id or "tool_call_0",
-          "type": "function",
-          "function": {"name": tool_name or "run_code", "arguments": tool_args_buffer or ""}
-        }]
-      else:
-        if not in_tool_call and self.active_block is None:
-          self.active_block = MessageBlock()
+        if delta.tool_calls:
+          for tc in delta.tool_calls:
+            if getattr(tc, 'id', None):
+              tool_call_id = tc.id
+            if tc.function and getattr(tc.function, 'name', None):
+              tool_name = tc.function.name
+            if tc.function and getattr(tc.function, 'arguments', None):
+              tool_args_buffer += tc.function.arguments
+          if not in_tool_call:
+            self.end_active_block()
+            self.active_block = CodeBlock()
+            in_tool_call = True
+          if "function_call" not in self.messages[-1]:
+            self.messages[-1]["function_call"] = {}
+          self.messages[-1]["function_call"]["name"] = tool_name or "run_code"
+          self.messages[-1]["function_call"]["arguments"] = tool_args_buffer
+          try:
+            parsed = json.loads(tool_args_buffer) if tool_args_buffer else None
+          except Exception:
+            parsed = None
+          self.messages[-1]["function_call"]["parsed_arguments"] = parsed
+          self.messages[-1]["tool_calls"] = [{
+            "id": tool_call_id or "tool_call_0",
+            "type": "function",
+            "function": {"name": tool_name or "run_code", "arguments": tool_args_buffer or ""}
+          }]
+        else:
+          if not in_tool_call and self.active_block is None:
+            self.active_block = MessageBlock()
 
-      self.active_block.update_from_message(self.messages[-1])
+        self.active_block.update_from_message(self.messages[-1])
 
-      if choice.finish_reason:
-        if choice.finish_reason == "tool_calls":
-          if not self.auto_run:
-            self.active_block.end()
-            language = self.active_block.language
-            code = self.active_block.code
-            response_input = input("  Would you like to run this code? (y/n)\n\n  ")
-            print("")
-            if response_input.strip().lower() == "y":
-              self.active_block = CodeBlock()
-              self.active_block.language = language
-              self.active_block.code = code
-            else:
+        if choice.finish_reason:
+          if choice.finish_reason == "tool_calls":
+            if not self.auto_run:
               self.active_block.end()
+              language = self.active_block.language
+              code = self.active_block.code
+              response_input = input("  Would you like to run this code? (y/n)\n\n  ")
+              print("")
+              if response_input.strip().lower() == "y":
+                self.active_block = CodeBlock()
+                self.active_block.language = language
+                self.active_block.code = code
+              else:
+                self.active_block.end()
+                self.messages.append({
+                  "role": "tool",
+                  "tool_call_id": tool_call_id or "tool_call_0",
+                  "name": "run_code",
+                  "content": "User decided not to run this code."
+                })
+                return
+
+            if "parsed_arguments" not in self.messages[-1].get("function_call", {}):
               self.messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id or "tool_call_0",
-                "name": "run_code",
-                "content": "User decided not to run this code."
+                "role": "user",
+                "content": "Your function call could not be parsed. Please use ONLY the `run_code` function with `language` and `code`."
               })
+              self.respond()
               return
 
-          if "parsed_arguments" not in self.messages[-1].get("function_call", {}):
+            language = self.messages[-1]["function_call"]["parsed_arguments"]["language"]
+            if language not in self.code_emplodes:
+              self.code_emplodes[language] = CodeEmplode(language, False)
+            code_emplode = self.code_emplodes[language]
+            code_emplode.active_block = self.active_block
+            code_emplode.run()
+            self.active_block.end()
             self.messages.append({
-              "role": "user",
-              "content": "Your function call could not be parsed. Please use ONLY the `run_code` function with `language` and `code`."
+              "role": "tool",
+              "tool_call_id": tool_call_id or "tool_call_0",
+              "name": "run_code",
+              "content": self.active_block.output if self.active_block.output else "No output"
             })
             self.respond()
+          else:
+            if "content" in self.messages[-1]:
+              self.messages[-1]["content"] = self.messages[-1]["content"].strip().rstrip("#")
+              self.active_block.update_from_message(self.messages[-1])
+              time.sleep(0.1)
+            self.active_block.end()
             return
+    else:
+      choice = response.choices[0]
+      message = {
+        "role": choice.message.role,
+        "content": choice.message.content,
+      }
+      if choice.message.tool_calls:
+        tool_call = choice.message.tool_calls[0]
+        args = getattr(tool_call.function, 'arguments', '') or ''
+        try:
+          parsed = json.loads(args) if args else None
+        except Exception:
+          parsed = None
+        message["function_call"] = {
+          "name": getattr(tool_call.function, 'name', 'run_code'),
+          "arguments": args,
+          "parsed_arguments": parsed,
+        }
+        message["tool_calls"] = [{
+          "id": getattr(tool_call, 'id', 'tool_call_0'),
+          "type": "function",
+          "function": {"name": getattr(tool_call.function, 'name', 'run_code'), "arguments": args}
+        }]
+      self.messages.append(message)
+      if message.get("tool_calls"):
+        self.active_block = CodeBlock()
+      else:
+        self.active_block = MessageBlock()
+      self.active_block.update_from_message(self.messages[-1])
 
-          language = self.messages[-1]["function_call"]["parsed_arguments"]["language"]
-          if language not in self.code_emplodes:
-            self.code_emplodes[language] = CodeEmplode(language, False)
-          code_emplode = self.code_emplodes[language]
-          code_emplode.active_block = self.active_block
-          code_emplode.run()
+      if message.get("tool_calls"):
+        if not self.auto_run:
           self.active_block.end()
-          self.messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id or "tool_call_0",
-            "name": "run_code",
-            "content": self.active_block.output if self.active_block.output else "No output"
-          })
-          self.respond()
-        else:
-          if "content" in self.messages[-1]:
-            self.messages[-1]["content"] = self.messages[-1]["content"].strip().rstrip("#")
-            self.active_block.update_from_message(self.messages[-1])
-            time.sleep(0.1)
-          self.active_block.end()
-          return
+          language = self.active_block.language
+          code = self.active_block.code
+          response_input = input("  Would you like to run this code? (y/n)\n\n  ")
+          print("")
+          if response_input.strip().lower() == "y":
+            self.active_block = CodeBlock()
+            self.active_block.language = language
+            self.active_block.code = code
+          else:
+            self.active_block.end()
+            self.messages.append({
+              "role": "tool",
+              "tool_call_id": message["tool_calls"][0]["id"],
+              "name": "run_code",
+              "content": "User decided not to run this code."
+            })
+            return
+        language = message["function_call"]["parsed_arguments"]["language"] if message["function_call"].get("parsed_arguments") else None
+        if language not in self.code_emplodes:
+          self.code_emplodes[language] = CodeEmplode(language, False)
+        code_emplode = self.code_emplodes[language]
+        code_emplode.active_block = self.active_block
+        code_emplode.run()
+        self.active_block.end()
+        self.messages.append({
+          "role": "tool",
+          "tool_call_id": message["tool_calls"][0]["id"],
+          "name": "run_code",
+          "content": self.active_block.output if self.active_block.output else "No output"
+        })
+        self.respond()
+      else:
+        self.active_block.end()
+        return
