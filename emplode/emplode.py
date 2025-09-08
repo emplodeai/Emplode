@@ -10,6 +10,7 @@ import traceback
 import json
 import platform
 from openai import OpenAI
+from openai import BadRequestError
 import getpass
 import readline
 import tokentrim as tt
@@ -290,16 +291,36 @@ class Emplode:
 
     error = ""
 
-    for _ in range(3): 
-      try:
-        response = self.client.chat.completions.create(
+    def request(use_stream=True):
+      if use_stream:
+        return self.client.chat.completions.create(
           model=self.model,
           messages=messages,
           functions=[function_schema],
           stream=True,
         )
+      else:
+        r = self.client.chat.completions.create(
+          model=self.model,
+          messages=messages,
+          functions=[function_schema],
+          stream=False,
+        )
+        choice = r.choices[0]
+        msg = choice.message.model_dump()
+        return [{"choices":[{"delta": msg, "finish_reason": choice.finish_reason}]}]
+
+    for _ in range(3):
+      try:
+        try:
+          response = request(use_stream=True)
+        except BadRequestError as e:
+          if "must be verified to stream this model" in str(e).lower() or "param': 'stream'" in str(e):
+            response = request(use_stream=False)
+          else:
+            raise
         break
-      except:
+      except Exception:
         if self.debug_mode:
           traceback.print_exc()
         error = traceback.format_exc()
