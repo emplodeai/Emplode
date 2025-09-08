@@ -10,13 +10,10 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-openai = "^1.0.0"
-rich = "*"
-tiktoken = "*"
-tokentrim = "*"
-python-dotenv = "*"
-requests = "*"
-packaging = "*"
+openai = "^1.106.1"
+rich = "^14.1.0"
+tiktoken = "^0.11.0"
+tokentrim = "^0.1.13"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

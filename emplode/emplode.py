@@ -11,7 +11,6 @@ import json
 import platform
 from openai import OpenAI
 import getpass
-import requests
 import readline
 import tokentrim as tt
 from rich import print
@@ -83,24 +82,6 @@ class Emplode:
 
     info += f"[User Info]\nName: {username}\nCWD: {current_working_directory}\nOS: {operating_system}"
 
-    query = []
-    for message in self.messages[-2:]:
-      message_for_semantic_search = {"role": message.get("role", "assistant")}
-      if "content" in message:
-        message_for_semantic_search["content"] = message["content"]
-      if "function_call" in message and "parsed_arguments" in message["function_call"]:
-        message_for_semantic_search["function_call"] = message["function_call"]["parsed_arguments"]
-      query.append(message_for_semantic_search)
-
-    url = "https://open-procedures.replit.app/search/"
-
-    try:
-      relevant_procedures = requests.get(url, data=json.dumps(query)).json().get("procedures", [])
-      if relevant_procedures:
-        info += "\n\n# Recommended Procedures\n" + "\n---\n".join(relevant_procedures) + "\nIn your plan, include steps and, if present, **EXACT CODE SNIPPETS** (especially for depracation notices, **WRITE THEM INTO YOUR PLAN -- underneath each numbered step** as they will VANISH once you execute your first line of code, so WRITE THEM DOWN NOW if you need them) from the above procedures if they are relevant to the task. Again, include **VERBATIM CODE SNIPPETS** from the procedures above if they are relevent to the task **directly in your plan.**"
-    except:
-      pass
-
     return info
 
   def reset(self):
@@ -151,13 +132,7 @@ class Emplode:
     for cmd, desc in commands_description.items():
       base_message.append(f"- `{cmd}`: {desc}\n")
 
-    additional_info = [
-      "\n\nFor further assistance, please join our community Discord or consider contributing to the project's development."
-    ]
-
-    full_message = base_message + additional_info
-
-    print(Markdown("".join(full_message)))
+    print(Markdown("".join(base_message)))
 
 
   def handle_debug(self, arguments=None):
