@@ -416,7 +416,6 @@ class Emplode:
               "content": """Your function call could not be parsed. Please use ONLY the `run_code` function, which takes two parameters: `code` and `language`. Your response should be formatted as a JSON."""
             })
 
-            self.respond()
             return
 
           language = self.messages[-1]["function_call"]["parsed_arguments"][
@@ -436,7 +435,7 @@ class Emplode:
             "content": self.active_block.output if self.active_block.output else "No output"
           })
 
-          self.respond()
+          return
 
         else:
           if "content" in self.messages[-1]:
