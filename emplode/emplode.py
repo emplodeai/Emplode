@@ -20,15 +20,13 @@ from rich.rule import Rule
 
 function_schema = {
   "name": "run_code",
-  "description":
-  "Executes code on the user's machine and returns the output",
+  "description": "Executes code on the user's machine and returns the output",
   "parameters": {
     "type": "object",
     "properties": {
       "language": {
         "type": "string",
-        "description":
-        "The programming language",
+        "description": "The programming language",
         "enum": ["python", "R", "shell", "applescript", "javascript", "html"]
       },
       "code": {
@@ -279,7 +277,6 @@ class Emplode:
 
   def respond(self):
     info = self.get_info_for_system_message()
-
     system_message = self.system_message + "\n\n" + info
 
     messages = tt.trim(self.messages, max_tokens=(self.context_window-self.max_tokens-25), system_message=system_message)
@@ -289,162 +286,85 @@ class Emplode:
       print(messages)
       print()
 
-    error = ""
+    # Prefer non-streaming for GPT-5 and use tools API
+    try:
+      r = self.client.chat.completions.create(
+        model=self.model,
+        messages=messages,
+        tools=[{"type": "function", "function": function_schema}],
+        stream=False,
+      )
+    except BadRequestError as e:
+      # If tools are not supported, fall back to no tools
+      if self.debug_mode:
+        traceback.print_exc()
+      r = self.client.chat.completions.create(
+        model=self.model,
+        messages=messages,
+        stream=False,
+      )
 
-    def request(use_stream=True):
-      if use_stream:
-        return self.client.chat.completions.create(
-          model=self.model,
-          messages=messages,
-          functions=[function_schema],
-          stream=True,
-        )
-      else:
-        r = self.client.chat.completions.create(
-          model=self.model,
-          messages=messages,
-          functions=[function_schema],
-          stream=False,
-        )
-        choice = r.choices[0]
-        msg = choice.message.model_dump()
-        return [{"choices":[{"delta": msg, "finish_reason": choice.finish_reason}]}]
+    choice = r.choices[0]
+    msg = choice.message
 
-    for _ in range(3):
-      try:
-        try:
-          response = request(use_stream=True)
-        except BadRequestError as e:
-          if "must be verified to stream this model" in str(e).lower() or "param': 'stream'" in str(e):
-            response = request(use_stream=False)
-          else:
-            raise
-        break
-      except Exception:
-        if self.debug_mode:
-          traceback.print_exc()
-        error = traceback.format_exc()
-        time.sleep(3)
-    else:
-      raise Exception(error)
+    # Build a synthetic assistant message for our transcript
+    assistant_msg = {"role": "assistant"}
 
-    self.messages.append({})
-    in_function_call = False
-    self.active_block = None
+    # Handle tool calls (function calling)
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+      fn = tool_calls[0].function
+      arguments = fn.arguments or ""
+      assistant_msg["function_call"] = {"name": fn.name, "arguments": arguments}
+      self.messages.append(assistant_msg)
 
-    for chunk in response:
-      try:
-        chunk_dict = chunk.model_dump()
-      except Exception:
-        chunk_dict = chunk
+      # Parse arguments safely
+      parsed = parse_partial_json(arguments) or {}
+      language = parsed.get("language")
+      code = parsed.get("code")
+      if not language or not code:
+        self.active_block = MessageBlock()
+        self.active_block.update_from_message({"content": "Your function call could not be parsed. It must include JSON with 'language' and 'code'."})
+        self.active_block.end()
+        return
 
-      delta = chunk_dict.get("choices", [{}])[0].get("delta", {})
-      finish_reason = chunk_dict.get("choices", [{}])[0].get("finish_reason")
+      # Show code block
+      self.end_active_block()
+      print()
+      self.active_block = CodeBlock()
+      self.active_block.language = language
+      self.active_block.code = code
+      self.active_block.refresh()
 
-      self.messages[-1] = merge_deltas(self.messages[-1], delta)
-
-      condition = "function_call" in self.messages[-1]
-
-      if condition:
-        if in_function_call == False:
-
-          self.end_active_block()
-
-          last_role = self.messages[-2]["role"]
-          if last_role == "user" or last_role == "function":
-            print()
-
-          self.active_block = CodeBlock()
-
-        in_function_call = True
-
-        if "arguments" in self.messages[-1]["function_call"]:
-          arguments = self.messages[-1]["function_call"]["arguments"]
-          new_parsed_arguments = parse_partial_json(arguments)
-          if new_parsed_arguments:
-            self.messages[-1]["function_call"][
-              "parsed_arguments"] = new_parsed_arguments
-
-      else:
-        if in_function_call == True:
-          in_function_call = False
-
-        if self.active_block == None:
-          self.active_block = MessageBlock()
-
-      self.active_block.update_from_message(self.messages[-1])
-
-      if finish_reason:
-        if finish_reason == "function_call":
-
-          if self.debug_mode:
-            print("Running function:")
-            print(self.messages[-1])
-            print("---")
-
-          if self.auto_run == False:
-
-            self.active_block.end()
-            language = self.active_block.language
-            code = self.active_block.code
-
-            response = input("  Would you like to run this code? (y/n)\n\n  ")
-            print("")
-
-            if response.strip().lower() == "y":
-              self.active_block = CodeBlock()
-              self.active_block.language = language
-              self.active_block.code = code
-
-            else:
-              self.active_block.end()
-              self.messages.append({
-                "role":
-                "function",
-                "name":
-                "run_code",
-                "content":
-                "User decided not to run this code."
-              })
-              return
-
-          if "parsed_arguments" not in self.messages[-1]["function_call"]:
-
-            self.messages.append({
-              "role": "function",
-              "name": "run_code",
-              "content": """Your function call could not be parsed. Please use ONLY the `run_code` function, which takes two parameters: `code` and `language`. Your response should be formatted as a JSON."""
-            })
-
-            return
-
-          language = self.messages[-1]["function_call"]["parsed_arguments"][
-            "language"]
-          if language not in self.code_emplodes:
-            self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
-          code_emplode = self.code_emplodes[language]
-
-          code_emplode.active_block = self.active_block
-          code_emplode.run()
-
-          self.active_block.end()
-
-          self.messages.append({
-            "role": "function",
-            "name": "run_code",
-            "content": self.active_block.output if self.active_block.output else "No output"
-          })
-
+      if self.auto_run is False:
+        self.active_block.end()
+        resp = input("  Would you like to run this code? (y/n)\n\n  ")
+        print("")
+        if resp.strip().lower() != "y":
           return
+        self.active_block = CodeBlock()
+        self.active_block.language = language
+        self.active_block.code = code
 
-        else:
-          if "content" in self.messages[-1]:
-            self.messages[-1]["content"] = self.messages[-1]["content"].strip().rstrip("#")
-            self.active_block.update_from_message(self.messages[-1])
-            time.sleep(0.1)
+      # Execute
+      if language not in self.code_emplodes:
+        self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
+      code_emplode = self.code_emplodes[language]
+      code_emplode.active_block = self.active_block
+      code_emplode.run()
+      self.active_block.end()
+      return
 
-          self.active_block.end()
-          return
+    # Otherwise, plain assistant content
+    content = msg.content or ""
+    assistant_msg["content"] = content
+    self.messages.append(assistant_msg)
+
+    self.end_active_block()
+    self.active_block = MessageBlock()
+    self.active_block.update_from_message({"content": content})
+    self.active_block.end()
+    return
 
   def _print_welcome_message(self):
     print("", "", Markdown(f"\nWelcome to **Emplode**.\n"), "")
