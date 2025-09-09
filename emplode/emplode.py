@@ -161,25 +161,38 @@ class Emplode:
 
     # Try streaming via Responses StreamManager; fallback to non-streaming
     try:
-      stream_mgr = self.client.responses.stream(
+      # Preferred: raw streaming via with_streaming_response
+      raw_stream_ctx = self.client.responses.with_streaming_response.create(
         model=self.model,
         instructions=trimmed[0]["content"],
         input=input_items,
         tools=tools,
+        stream=True,
       )
-      streaming_mode = True
+      streaming_variant = "raw"
     except Exception:
-      stream_mgr = None
-      resp = self.client.responses.create(
-        model=self.model,
-        instructions=trimmed[0]["content"],
-        input=input_items,
-        tools=tools,
-        stream=False,
-      )
-      streaming_mode = False
+      raw_stream_ctx = None
+      try:
+        # Fallback: high-level stream manager
+        stream_mgr = self.client.responses.stream(
+          model=self.model,
+          instructions=trimmed[0]["content"],
+          input=input_items,
+          tools=tools,
+        )
+        streaming_variant = "manager"
+      except Exception:
+        stream_mgr = None
+        resp = self.client.responses.create(
+          model=self.model,
+          instructions=trimmed[0]["content"],
+          input=input_items,
+          tools=tools,
+          stream=False,
+        )
+        streaming_variant = None
 
-    if streaming_mode:
+    if streaming_variant is not None:
       self.messages.append({"role": "assistant"})
       in_tool_call = False
       tool_call_id = None
@@ -187,9 +200,91 @@ class Emplode:
       tool_args_buffer = ""
       self.active_block = MessageBlock()
 
-      with stream_mgr as stream:
-        for event in stream:
-          etype = getattr(event, "type", None)
+      if streaming_variant == "raw":
+        with raw_stream_ctx as stream:
+          for event in stream:
+            etype = getattr(event, "type", None)
+            # Same handling as below
+            if etype == "response.output_text.delta":
+              if "content" not in self.messages[-1]:
+                self.messages[-1]["content"] = ""
+              self.messages[-1]["content"] += event.delta
+              self.active_block.update_from_message(self.messages[-1])
+            elif etype == "response.output_item.added" and getattr(event.item, "type", None) == "function_call":
+              in_tool_call = True
+              tool_name = event.item.name
+              tool_call_id = getattr(event.item, "id", None) or getattr(event.item, "call_id", None)
+              tool_args_buffer = ""
+              self.end_active_block()
+              self.active_block = CodeBlock()
+              if "function_call" not in self.messages[-1]:
+                self.messages[-1]["function_call"] = {"name": tool_name, "arguments": ""}
+            elif etype == "response.function_call_arguments.delta":
+              tool_args_buffer += event.delta
+              if "function_call" not in self.messages[-1]:
+                self.messages[-1]["function_call"] = {"name": tool_name or "run_code", "arguments": ""}
+              self.messages[-1]["function_call"]["arguments"] = tool_args_buffer
+              parsed = parse_partial_json(tool_args_buffer)
+              self.messages[-1]["function_call"]["parsed_arguments"] = parsed
+              self.active_block.update_from_message(self.messages[-1])
+            elif etype == "response.function_call_arguments.done":
+              final_args = event.arguments or tool_args_buffer
+              try:
+                parsed = json.loads(final_args)
+              except Exception:
+                parsed = parse_partial_json(final_args)
+              if "function_call" not in self.messages[-1]:
+                self.messages[-1]["function_call"] = {"name": tool_name or "run_code"}
+              self.messages[-1]["function_call"]["arguments"] = final_args
+              self.messages[-1]["function_call"]["parsed_arguments"] = parsed
+              self.messages[-1]["tool_calls"] = [{
+                "id": tool_call_id or "tool_call_0",
+                "type": "function",
+                "function": {"name": tool_name or "run_code", "arguments": final_args}
+              }]
+
+              if not self.auto_run:
+                self.active_block.end()
+                language = self.active_block.language
+                code = self.active_block.code
+                resp_in = input("  Would you like to run this code? (y/n)\n\n  ")
+                print("")
+                if resp_in.strip().lower() == "y":
+                  self.active_block = CodeBlock()
+                  self.active_block.language = language
+                  self.active_block.code = code
+                else:
+                  self.active_block.end()
+                  self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id or "tool_call_0",
+                    "name": "run_code",
+                    "content": "User decided not to run this code."
+                  })
+                  return
+
+              language = self.messages[-1]["function_call"].get("parsed_arguments", {}).get("language")
+              if language not in self.code_emplodes:
+                self.code_emplodes[language] = CodeEmplode(language, False)
+              code_emplode = self.code_emplodes[language]
+              code_emplode.active_block = self.active_block
+              code_emplode.run()
+              self.active_block.end()
+              self.messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id or "tool_call_0",
+                "name": "run_code",
+                "content": self.active_block.output if self.active_block.output else "No output"
+              })
+              self.respond()
+              return
+            elif etype == "response.completed":
+              self.active_block.end()
+              return
+      else:
+        with stream_mgr as stream:
+          for event in stream:
+            etype = getattr(event, "type", None)
           if etype == "response.output_text.delta":
             if "content" not in self.messages[-1]:
               self.messages[-1]["content"] = ""
