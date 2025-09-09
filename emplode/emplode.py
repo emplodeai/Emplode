@@ -59,6 +59,10 @@ class Emplode:
     self.debug_mode = False
     self.context_window = 200000
     self.max_tokens = 750
+    self.max_auto_fixes = int(os.getenv('EMPLODE_AUTO_FIX_LIMIT', '5'))
+    self._auto_fix_count = 0
+    self.auto_install = os.getenv('EMPLODE_AUTO_INSTALL', 'true').lower() in ('1','true','yes','y')
+    self._install_attempted = set()
     here = os.path.abspath(os.path.dirname(__file__))
     with open(os.path.join(here, 'system_message.txt'), 'r') as f:
       self.system_message = f.read().strip()
@@ -169,6 +173,7 @@ class Emplode:
 
   def chat(self, message=None, return_messages=False):
     self.verify_api_key()
+    self._auto_fix_count = 0
 
     welcome = ""
     if self.debug_mode:
@@ -323,6 +328,74 @@ class Emplode:
       self.active_block.update_from_message({"content": text_accum})
       self.active_block.end()
 
+  def _is_error_output(self, output):
+    out = (output or "").lower()
+    patterns = [
+      "traceback (most recent call last)",
+      "error:",
+      "exception:",
+      "command not found",
+      "no such file or directory",
+      "module not found",
+      "moduleNotFoundError".lower(),
+      "nameerror:",
+      "syntaxerror:",
+      "typeerror:",
+      "valueerror:",
+      "runtimeerror:",
+    ]
+    return any(p in out for p in patterns)
+
+  def _run_code_direct(self, language, code):
+    self.end_active_block()
+    self.active_block = CodeBlock()
+    self.active_block.language = language
+    self.active_block.code = code
+    self.active_block.refresh()
+    if language not in self.code_emplodes:
+      self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
+    ce = self.code_emplodes[language]
+    ce.active_block = self.active_block
+    ce.run()
+    output = self.active_block.output
+    self.active_block.end()
+    return output
+
+  def _maybe_auto_install(self, language, code, output):
+    if not self.auto_install or language != 'python':
+      return False
+    text = output or ""
+    m = re.search(r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]", text)
+    if not m:
+      m = re.search(r"No module named ['\"]?([A-Za-z0-9_\-.]+)['\"]?", text)
+    if not m:
+      return False
+    pkg = m.group(1)
+    if pkg in self._install_attempted:
+      return False
+    self._install_attempted.add(pkg)
+
+    install_cmd = f"python -m pip install -U {pkg} || python3 -m pip install -U {pkg}"
+    self._run_code_direct('shell', install_cmd)
+    new_out = self._run_code_direct(language, code)
+    self._auto_fix_or_finish(new_out)
+    return True
+
+  def _auto_fix_or_finish(self, output):
+    if self._auto_fix_count >= self.max_auto_fixes:
+      return
+    if self._is_error_output(output):
+      self._auto_fix_count += 1
+      self.messages.append({
+        "role": "user",
+        "content": (
+          "Execution failed. Here is the full output from your last run:\n\n" +
+          (output or "No output") +
+          "\n\nPlease fix the issue and try again using the run_code tool only."
+        )
+      })
+      self.respond()
+
   def _execute_run_code(self, tool_name, raw_args):
     if tool_name != 'run_code':
       return
@@ -356,7 +429,12 @@ class Emplode:
     ce = self.code_emplodes[language]
     ce.active_block = self.active_block
     ce.run()
+    output = self.active_block.output
     self.active_block.end()
+    # Try auto-install then auto-fix
+    if self._maybe_auto_install(language, code, output):
+      return
+    self._auto_fix_or_finish(output)
 
   def respond(self):
     info = self.get_info_for_system_message()
