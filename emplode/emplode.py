@@ -159,18 +159,17 @@ class Emplode:
       "strict": True,
     }]
 
-    # Try streaming, fallback to non-streaming if unsupported
+    # Try streaming via Responses StreamManager; fallback to non-streaming
     try:
-      stream = self.client.responses.create(
+      stream_mgr = self.client.responses.stream(
         model=self.model,
         instructions=trimmed[0]["content"],
         input=input_items,
         tools=tools,
-        stream=True,
       )
       streaming_mode = True
     except Exception:
-      stream = None
+      stream_mgr = None
       resp = self.client.responses.create(
         model=self.model,
         instructions=trimmed[0]["content"],
@@ -188,88 +187,88 @@ class Emplode:
       tool_args_buffer = ""
       self.active_block = MessageBlock()
 
-      for event in stream:
-        etype = getattr(event, "type", None)
-        if etype == "response.output_text.delta":
-          if "content" not in self.messages[-1]:
-            self.messages[-1]["content"] = ""
-          self.messages[-1]["content"] += event.delta
-          self.active_block.update_from_message(self.messages[-1])
-        elif etype == "response.output_item.added" and getattr(event.item, "type", None) == "function_call":
-          in_tool_call = True
-          tool_name = event.item.name
-          tool_call_id = event.item.call_id
-          tool_args_buffer = ""
-          self.end_active_block()
-          self.active_block = CodeBlock()
-          if "function_call" not in self.messages[-1]:
-            self.messages[-1]["function_call"] = {"name": tool_name, "arguments": ""}
-        elif etype == "response.function_call_arguments.delta":
-          tool_args_buffer += event.delta
-          if "function_call" not in self.messages[-1]:
-            self.messages[-1]["function_call"] = {"name": tool_name or "run_code", "arguments": ""}
-          self.messages[-1]["function_call"]["arguments"] = tool_args_buffer
-          parsed = parse_partial_json(tool_args_buffer)
-          self.messages[-1]["function_call"]["parsed_arguments"] = parsed
-          self.active_block.update_from_message(self.messages[-1])
-        elif etype == "response.function_call_arguments.done":
-          # finalize tool call
-          final_args = event.arguments or tool_args_buffer
-          try:
-            parsed = json.loads(final_args)
-          except Exception:
-            parsed = parse_partial_json(final_args)
-          if "function_call" not in self.messages[-1]:
-            self.messages[-1]["function_call"] = {"name": tool_name or "run_code"}
-          self.messages[-1]["function_call"]["arguments"] = final_args
-          self.messages[-1]["function_call"]["parsed_arguments"] = parsed
-          self.messages[-1]["tool_calls"] = [{
-            "id": tool_call_id or "tool_call_0",
-            "type": "function",
-            "function": {"name": tool_name or "run_code", "arguments": final_args}
-          }]
+      with stream_mgr as stream:
+        for event in stream:
+          etype = getattr(event, "type", None)
+          if etype == "response.output_text.delta":
+            if "content" not in self.messages[-1]:
+              self.messages[-1]["content"] = ""
+            self.messages[-1]["content"] += event.delta
+            self.active_block.update_from_message(self.messages[-1])
+          elif etype == "response.output_item.added" and getattr(event.item, "type", None) == "function_call":
+            in_tool_call = True
+            tool_name = event.item.name
+            tool_call_id = getattr(event.item, "id", None) or event.item.call_id
+            tool_args_buffer = ""
+            self.end_active_block()
+            self.active_block = CodeBlock()
+            if "function_call" not in self.messages[-1]:
+              self.messages[-1]["function_call"] = {"name": tool_name, "arguments": ""}
+          elif etype == "response.function_call_arguments.delta":
+            tool_args_buffer += event.delta
+            if "function_call" not in self.messages[-1]:
+              self.messages[-1]["function_call"] = {"name": tool_name or "run_code", "arguments": ""}
+            self.messages[-1]["function_call"]["arguments"] = tool_args_buffer
+            parsed = parse_partial_json(tool_args_buffer)
+            self.messages[-1]["function_call"]["parsed_arguments"] = parsed
+            self.active_block.update_from_message(self.messages[-1])
+          elif etype == "response.function_call_arguments.done":
+            final_args = event.arguments or tool_args_buffer
+            try:
+              parsed = json.loads(final_args)
+            except Exception:
+              parsed = parse_partial_json(final_args)
+            if "function_call" not in self.messages[-1]:
+              self.messages[-1]["function_call"] = {"name": tool_name or "run_code"}
+            self.messages[-1]["function_call"]["arguments"] = final_args
+            self.messages[-1]["function_call"]["parsed_arguments"] = parsed
+            self.messages[-1]["tool_calls"] = [{
+              "id": tool_call_id or "tool_call_0",
+              "type": "function",
+              "function": {"name": tool_name or "run_code", "arguments": final_args}
+            }]
 
-          if not self.auto_run:
-            self.active_block.end()
-            language = self.active_block.language
-            code = self.active_block.code
-            resp_in = input("  Would you like to run this code? (y/n)\n\n  ")
-            print("")
-            if resp_in.strip().lower() == "y":
-              self.active_block = CodeBlock()
-              self.active_block.language = language
-              self.active_block.code = code
-            else:
+            if not self.auto_run:
               self.active_block.end()
-              self.messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id or "tool_call_0",
-                "name": "run_code",
-                "content": "User decided not to run this code."
-              })
-              return
+              language = self.active_block.language
+              code = self.active_block.code
+              resp_in = input("  Would you like to run this code? (y/n)\n\n  ")
+              print("")
+              if resp_in.strip().lower() == "y":
+                self.active_block = CodeBlock()
+                self.active_block.language = language
+                self.active_block.code = code
+              else:
+                self.active_block.end()
+                self.messages.append({
+                  "role": "tool",
+                  "tool_call_id": tool_call_id or "tool_call_0",
+                  "name": "run_code",
+                  "content": "User decided not to run this code."
+                })
+                return
 
-          language = self.messages[-1]["function_call"]["parsed_arguments"]["language"] if self.messages[-1]["function_call"].get("parsed_arguments") else None
-          if language not in self.code_emplodes:
-            self.code_emplodes[language] = CodeEmplode(language, False)
-          code_emplode = self.code_emplodes[language]
-          code_emplode.active_block = self.active_block
-          code_emplode.run()
-          self.active_block.end()
-          self.messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id or "tool_call_0",
-            "name": "run_code",
-            "content": self.active_block.output if self.active_block.output else "No output"
-          })
-          self.respond()
-          return
-        elif etype == "response.completed":
-          self.active_block.end()
-          return
-        elif etype == "response.error":
-          self.active_block.end()
-          raise Exception(getattr(event, "error", None))
+            language = self.messages[-1]["function_call"].get("parsed_arguments", {}).get("language")
+            if language not in self.code_emplodes:
+              self.code_emplodes[language] = CodeEmplode(language, False)
+            code_emplode = self.code_emplodes[language]
+            code_emplode.active_block = self.active_block
+            code_emplode.run()
+            self.active_block.end()
+            self.messages.append({
+              "role": "tool",
+              "tool_call_id": tool_call_id or "tool_call_0",
+              "name": "run_code",
+              "content": self.active_block.output if self.active_block.output else "No output"
+            })
+            self.respond()
+            return
+          elif etype == "response.completed":
+            self.active_block.end()
+            return
+          elif etype == "response.error":
+            self.active_block.end()
+            raise Exception(getattr(event, "error", None))
 
     else:
       # Non-streaming response
