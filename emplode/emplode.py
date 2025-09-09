@@ -18,7 +18,9 @@ from rich import print
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-function_schema = {
+# Responses API tool definition for function-calling (strict JSON Schema)
+RUN_CODE_TOOL = {
+  "type": "function",
   "name": "run_code",
   "description": "Executes code on the user's machine and returns the output",
   "parameters": {
@@ -34,16 +36,15 @@ function_schema = {
         "description": "The code to execute"
       }
     },
-    "required": ["language", "code"]
-  },
+    "required": ["language", "code"],
+    "additionalProperties": False
+  }
 }
 
-missing_api_key_message = "> OpenAI API key not found\n\nTo use `GPT-5` please provide an OpenAI API key.\n"
+missing_api_key_message = "> OpenAI API key not found. Provide an OpenAI API key to continue.\n"
 
 confirm_mode_message = """
-**Emplode** will require approval before running code. Use `emplode -y` to bypass this.
-
-Press `CTRL-C` to exit.
+Emplode will require approval before running code. Use `emplode -y` to bypass this.
 """
 
 
@@ -51,7 +52,6 @@ class Emplode:
 
   def __init__(self):
     self.messages = []
-    self.temperature = 1.0
     self.api_key = None
     self.auto_run = False
     self.model = "gpt-5"
@@ -63,25 +63,17 @@ class Emplode:
       self.system_message = f.read().strip()
 
     self.code_emplodes = {}
-
     self.active_block = None
-
     self.client = None
 
   def cli(self):
     cli(self)
 
   def get_info_for_system_message(self):
-
-    info = ""
-
     username = getpass.getuser()
-    current_working_directory = os.getcwd()
-    operating_system = platform.system()
-
-    info += f"[User Info]\nName: {username}\nCWD: {current_working_directory}\nOS: {operating_system}"
-
-    return info
+    cwd = os.getcwd()
+    os_name = platform.system()
+    return f"[User Info]\nName: {username}\nCWD: {cwd}\nOS: {os_name}"
 
   def reset(self):
     self.messages = []
@@ -91,59 +83,48 @@ class Emplode:
     self.messages = messages
 
   def handle_undo(self, arguments):
-
     if len(self.messages) == 0:
       return
     last_user_index = None
     for i, message in enumerate(self.messages):
-        if message.get('role') == 'user':
-            last_user_index = i
-
-    removed_messages = []
-
+      if message.get('role') == 'user':
+        last_user_index = i
+    removed = []
     if last_user_index is not None:
-        removed_messages = self.messages[last_user_index:]
-        self.messages = self.messages[:last_user_index]
+      removed = self.messages[last_user_index:]
+      self.messages = self.messages[:last_user_index]
+    print("")
+    for m in removed:
+      if 'content' in m and m['content'] is not None:
+        print(Markdown(f"**Removed message:** `\"{m['content'][:30]}...\"`"))
+      elif 'function_call' in m:
+        print(Markdown("**Removed codeblock**"))
+    print("")
 
-    print("") 
-
-    for message in removed_messages:
-      if 'content' in message and message['content'] != None:
-        print(Markdown(f"**Removed message:** `\"{message['content'][:30]}...\"`"))
-      elif 'function_call' in message:
-        print(Markdown(f"**Removed codeblock**"))
-    
-    print("") 
   def handle_help(self, arguments):
-    commands_description = {
-      "%debug [true/false]": "Toggle debug mode. Without arguments or with 'true', it enters debug mode. With 'false', it exits debug mode.",
-      "%reset": "Resets the current session.",
-      "%undo": "Remove previous messages and its response from the message history.",
-      "%save_message [path]": "Saves messages to a specified JSON path. If no path is provided, it defaults to 'messages.json'.",
-      "%load_message [path]": "Loads messages from a specified JSON path. If no path is provided, it defaults to 'messages.json'.",
+    items = {
+      "%debug [true/false]": "Toggle debug mode.",
+      "%reset": "Reset the current session.",
+      "%undo": "Remove the previous user message and response.",
+      "%save_message [path]": "Save messages to JSON.",
+      "%load_message [path]": "Load messages from JSON.",
       "%help": "Show this help message.",
     }
-
-    base_message = [
-      "> **Available Commands:**\n\n"
-    ]
-
-    for cmd, desc in commands_description.items():
-      base_message.append(f"- `{cmd}`: {desc}\n")
-
-    print(Markdown("".join(base_message)))
-
+    base = ["> **Available Commands:**\n\n"]
+    for cmd, desc in items.items():
+      base.append(f"- `{cmd}`: {desc}\n")
+    print(Markdown("".join(base)))
 
   def handle_debug(self, arguments=None):
     if arguments == "" or arguments == "true":
-        print(Markdown("> Entered debug mode"))
-        print(self.messages)
-        self.debug_mode = True
+      print(Markdown("> Entered debug mode"))
+      print(self.messages)
+      self.debug_mode = True
     elif arguments == "false":
-        print(Markdown("> Exited debug mode"))
-        self.debug_mode = False
+      print(Markdown("> Exited debug mode"))
+      self.debug_mode = False
     else:
-        print(Markdown("> Unknown argument to debug command."))
+      print(Markdown("> Unknown argument to debug command."))
 
   def handle_reset(self, arguments):
     self.reset()
@@ -160,7 +141,6 @@ class Emplode:
       json_path += ".json"
     with open(json_path, 'w') as f:
       json.dump(self.messages, f, indent=2)
-
     print(Markdown(f"> messages json export to {os.path.abspath(json_path)}"))
 
   def handle_load_message(self, json_path):
@@ -170,7 +150,6 @@ class Emplode:
       json_path += ".json"
     with open(json_path, 'r') as f:
       self.load(json.load(f))
-
     print(Markdown(f"> messages json loaded from {os.path.abspath(json_path)}"))
 
   def handle_command(self, user_input):
@@ -182,60 +161,38 @@ class Emplode:
       "load_message": self.handle_load_message,
       "undo": self.handle_undo,
     }
-
-    user_input = user_input[1:].strip()  
+    user_input = user_input[1:].strip()
     command = user_input.split(" ")[0]
     arguments = user_input[len(command):].strip()
-    action = switch.get(command,
-                        self.default_handle)  
-    action(arguments)  
+    switch.get(command, self.default_handle)(arguments)
 
   def chat(self, message=None, return_messages=False):
-
     self.verify_api_key()
 
-    welcome_message = ""
-
+    welcome = ""
     if self.debug_mode:
-      welcome_message += "> Entered debug mode"
-
+      welcome += "> Entered debug mode"
+    welcome += f"\n> Model set to `{self.model.upper()}`"
     if not self.auto_run:
-      notice_model = f"{self.model.upper()}"
-      welcome_message += f"\n> Model set to `{notice_model}`\n\n**Tip:** To auto-run code, use `emplode -y`"
-    
-    if not self.auto_run:
-      welcome_message += "\n\n" + confirm_mode_message
-
-    welcome_message = welcome_message.strip()
-
-    if welcome_message != "":
-      if welcome_message.startswith(">"):
-        print(Markdown(welcome_message), '')
-      else:
-        print('', Markdown(welcome_message), '')
+      welcome += f"\n\n{confirm_mode_message}"
+    welcome = welcome.strip()
+    if welcome:
+      print(Markdown(welcome), '')
 
     if message:
       self.messages.append({"role": "user", "content": message})
       self.respond()
-
     else:
       while True:
         try:
           user_input = input("> ").strip()
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
+          print()
           break
-        except KeyboardInterrupt:
-          print()  
-          break
-
-        readline.add_history(user_input)
-
         if user_input.startswith("%") or user_input.startswith("/"):
           self.handle_command(user_input)
           continue
-
         self.messages.append({"role": "user", "content": user_input})
-
         try:
           self.respond()
         except KeyboardInterrupt:
@@ -244,29 +201,17 @@ class Emplode:
           self.end_active_block()
 
     if return_messages:
-        return self.messages
+      return self.messages
 
   def verify_api_key(self):
     if self.api_key is None:
-      if 'OPENAI_API_KEY' in os.environ:
-        self.api_key = os.environ['OPENAI_API_KEY']
-      else:
-        self._print_welcome_message()
-        time.sleep(1)
-
-        print(Rule(style="white"))
-
-        print(Markdown(missing_api_key_message), '', Rule(style="white"), '')
-        response = input("OpenAI API key: ")
-
-        if response == "":
+      key = os.environ.get('OPENAI_API_KEY')
+      if not key:
+        print(Markdown(missing_api_key_message))
+        key = input("OpenAI API key: ").strip()
+        if not key:
           raise Exception("OpenAI API key is required to use Emplode with GPT-5.")
-        else:
-          self.api_key = response
-          print('', Markdown("**Tip:** To save this key for later, run `setx OPENAI_API_KEY your_api_key` on Windows or `export OPENAI_API_KEY=your_api_key` on Mac/Linux."), '')
-          time.sleep(2)
-          print(Rule(style="white"))
-
+      self.api_key = key
     if self.client is None:
       self.client = OpenAI(api_key=self.api_key)
 
@@ -275,96 +220,149 @@ class Emplode:
       self.active_block.end()
       self.active_block = None
 
+  def _stream_with_responses(self, sys_and_messages):
+    content_buf = ""
+    tool_name = None
+    tool_args_buf = ""
+
+    # Live stream
+    try:
+      with self.client.responses.stream(
+        model=self.model,
+        input=sys_and_messages,
+        tools=[RUN_CODE_TOOL],
+      ) as stream:
+        for event in stream:
+          t = getattr(event, 'type', '')
+          # Text deltas
+          if 'output_text.delta' in t:
+            delta = getattr(event, 'delta', '') or getattr(event, 'text', '')
+            if delta:
+              content_buf += delta
+              if not isinstance(self.active_block, MessageBlock):
+                self.end_active_block()
+                self.active_block = MessageBlock()
+              self.active_block.update_from_message({"content": content_buf})
+          # Tool call incremental pieces
+          elif 'tool_call.delta' in t:
+            d = getattr(event, 'delta', None)
+            if isinstance(d, dict):
+              if not tool_name and d.get('name'):
+                tool_name = d['name']
+              if d.get('arguments'):
+                tool_args_buf += d['arguments']
+            elif isinstance(d, str):
+              tool_args_buf += d
+          # Tool call finished
+          elif 'tool_call.completed' in t:
+            # Execute tool now
+            self._execute_run_code(tool_name, tool_args_buf)
+            return
+        # finalize response (ensures any remaining chunks are processed)
+        _ = stream.get_final_response()
+    except BadRequestError:
+      # Fallback to non-stream
+      r = self.client.responses.create(
+        model=self.model,
+        input=sys_and_messages,
+        tools=[RUN_CODE_TOOL],
+        stream=False,
+      )
+      return self._handle_nonstream_response(r)
+
+  def _handle_nonstream_response(self, r):
+    # Try to read tool calls; structure can vary by SDK version
+    try:
+      out = getattr(r, 'output', None) or []
+    except Exception:
+      out = []
+    # Search for tool call
+    tool_name = None
+    tool_args = None
+    for item in out:
+      t = getattr(item, 'type', None)
+      if t == 'tool_call':
+        f = getattr(item, 'tool_call', None)
+        if f and getattr(f, 'type', '') == 'function':
+          tool_name = getattr(f, 'name', None)
+          tool_args = getattr(f, 'arguments', None)
+          break
+      if t == 'message' and hasattr(item, 'content'):
+        # Plain assistant text
+        text_parts = []
+        for c in getattr(item, 'content', []) or []:
+          if getattr(c, 'type', None) == 'output_text':
+            text_parts.append(getattr(c, 'text', '') or '')
+        text = ''.join(text_parts)
+        if text:
+          self.end_active_block()
+          self.active_block = MessageBlock()
+          self.active_block.update_from_message({"content": text})
+          self.active_block.end()
+          return
+
+    if tool_name:
+      self._execute_run_code(tool_name, tool_args or "")
+      return
+
+    # If we got here, just show best-effort text
+    try:
+      text = getattr(r, 'output_text', '') or ''
+    except Exception:
+      text = ''
+    if text:
+      self.end_active_block()
+      self.active_block = MessageBlock()
+      self.active_block.update_from_message({"content": text})
+      self.active_block.end()
+
+  def _execute_run_code(self, tool_name, raw_args):
+    if tool_name != 'run_code':
+      return
+    parsed = parse_partial_json(raw_args or "") or {}
+    language = parsed.get('language')
+    code = parsed.get('code')
+    if not language or not code:
+      self.end_active_block()
+      self.active_block = MessageBlock()
+      self.active_block.update_from_message({"content": "Tool arguments missing 'language' or 'code'."})
+      self.active_block.end()
+      return
+    # Show code
+    self.end_active_block()
+    print()
+    self.active_block = CodeBlock()
+    self.active_block.language = language
+    self.active_block.code = code
+    self.active_block.refresh()
+    if self.auto_run is False:
+      self.active_block.end()
+      resp = input("  Would you like to run this code? (y/n)\n\n  ")
+      print("")
+      if resp.strip().lower() != 'y':
+        return
+      self.active_block = CodeBlock()
+      self.active_block.language = language
+      self.active_block.code = code
+    if language not in self.code_emplodes:
+      self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
+    ce = self.code_emplodes[language]
+    ce.active_block = self.active_block
+    ce.run()
+    self.active_block.end()
+
   def respond(self):
     info = self.get_info_for_system_message()
     system_message = self.system_message + "\n\n" + info
 
-    messages = tt.trim(self.messages, max_tokens=(self.context_window-self.max_tokens-25), system_message=system_message)
+    # Trim conversation to fit
+    trimmed = tt.trim(self.messages, max_tokens=(self.context_window - self.max_tokens - 25), system_message=system_message)
 
-    if self.debug_mode:
-      print("\n", "Sending `messages` to LLM:", "\n")
-      print(messages)
-      print()
+    # Convert to Responses API input
+    sys_and_messages = [{"role": "system", "content": system_message}] + trimmed[1:]
 
-    # Prefer non-streaming for GPT-5 and use tools API
-    try:
-      r = self.client.chat.completions.create(
-        model=self.model,
-        messages=messages,
-        tools=[{"type": "function", "function": function_schema}],
-        stream=False,
-      )
-    except BadRequestError as e:
-      # If tools are not supported, fall back to no tools
-      if self.debug_mode:
-        traceback.print_exc()
-      r = self.client.chat.completions.create(
-        model=self.model,
-        messages=messages,
-        stream=False,
-      )
-
-    choice = r.choices[0]
-    msg = choice.message
-
-    # Build a synthetic assistant message for our transcript
-    assistant_msg = {"role": "assistant"}
-
-    # Handle tool calls (function calling)
-    tool_calls = getattr(msg, "tool_calls", None)
-    if tool_calls:
-      fn = tool_calls[0].function
-      arguments = fn.arguments or ""
-      assistant_msg["function_call"] = {"name": fn.name, "arguments": arguments}
-      self.messages.append(assistant_msg)
-
-      # Parse arguments safely
-      parsed = parse_partial_json(arguments) or {}
-      language = parsed.get("language")
-      code = parsed.get("code")
-      if not language or not code:
-        self.active_block = MessageBlock()
-        self.active_block.update_from_message({"content": "Your function call could not be parsed. It must include JSON with 'language' and 'code'."})
-        self.active_block.end()
-        return
-
-      # Show code block
-      self.end_active_block()
-      print()
-      self.active_block = CodeBlock()
-      self.active_block.language = language
-      self.active_block.code = code
-      self.active_block.refresh()
-
-      if self.auto_run is False:
-        self.active_block.end()
-        resp = input("  Would you like to run this code? (y/n)\n\n  ")
-        print("")
-        if resp.strip().lower() != "y":
-          return
-        self.active_block = CodeBlock()
-        self.active_block.language = language
-        self.active_block.code = code
-
-      # Execute
-      if language not in self.code_emplodes:
-        self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
-      code_emplode = self.code_emplodes[language]
-      code_emplode.active_block = self.active_block
-      code_emplode.run()
-      self.active_block.end()
-      return
-
-    # Otherwise, plain assistant content
-    content = msg.content or ""
-    assistant_msg["content"] = content
-    self.messages.append(assistant_msg)
-
-    self.end_active_block()
-    self.active_block = MessageBlock()
-    self.active_block.update_from_message({"content": content})
-    self.active_block.end()
-    return
+    # Stream first; fallback to non-stream automatically
+    self._stream_with_responses(sys_and_messages)
 
   def _print_welcome_message(self):
     print("", "", Markdown(f"\nWelcome to **Emplode**.\n"), "")
