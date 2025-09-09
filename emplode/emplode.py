@@ -167,6 +167,7 @@ class Emplode:
         instructions=trimmed[0]["content"],
         input=input_items,
         tools=tools,
+        tool_choice={"type": "function", "name": "run_code"},
         stream=True,
       )
       streaming_variant = "raw"
@@ -179,6 +180,7 @@ class Emplode:
           instructions=trimmed[0]["content"],
           input=input_items,
           tools=tools,
+          tool_choice={"type": "function", "name": "run_code"},
         )
         streaming_variant = "manager"
       except Exception:
@@ -188,6 +190,7 @@ class Emplode:
           instructions=trimmed[0]["content"],
           input=input_items,
           tools=tools,
+          tool_choice={"type": "function", "name": "run_code"},
           stream=False,
         )
         streaming_variant = None
@@ -261,9 +264,11 @@ class Emplode:
                     "name": "run_code",
                     "content": "User decided not to run this code."
                   })
+                  # Continue the loop to let the model propose a corrected code
+                  self.respond()
                   return
 
-              language = self.messages[-1]["function_call"].get("parsed_arguments", {}).get("language")
+              language = self.messages[-1]["function_call"].get("parsed_arguments", {}).get("language") or "python"
               if language not in self.code_emplodes:
                 self.code_emplodes[language] = CodeEmplode(language, False)
               code_emplode = self.code_emplodes[language]
@@ -341,9 +346,10 @@ class Emplode:
                   "name": "run_code",
                   "content": "User decided not to run this code."
                 })
+                self.respond()
                 return
 
-            language = self.messages[-1]["function_call"].get("parsed_arguments", {}).get("language")
+            language = self.messages[-1]["function_call"].get("parsed_arguments", {}).get("language") or "python"
             if language not in self.code_emplodes:
               self.code_emplodes[language] = CodeEmplode(language, False)
             code_emplode = self.code_emplodes[language]
