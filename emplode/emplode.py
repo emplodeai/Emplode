@@ -9,6 +9,7 @@ import time
 import traceback
 import json
 import platform
+import re
 from openai import OpenAI
 from openai import BadRequestError
 import getpass
@@ -220,6 +221,17 @@ class Emplode:
       self.active_block.end()
       self.active_block = None
 
+  def _extract_last_code_block(self, text):
+    pattern = re.compile(r"```([a-zA-Z]+)?\n([\s\S]*?)```", re.DOTALL)
+    matches = list(pattern.finditer(text or ""))
+    if not matches:
+      return None, None
+    lang = matches[-1].group(1) or "python"
+    code = matches[-1].group(2) or ""
+    if lang == "bash":
+      lang = "shell"
+    return lang, code.strip()
+
   def _stream_with_responses(self, sys_and_messages):
     content_buf = ""
     tool_name = None
@@ -255,10 +267,15 @@ class Emplode:
               tool_args_buf += d
           # Tool call finished
           elif 'tool_call.completed' in t:
-            # Execute tool now
             self._execute_run_code(tool_name, tool_args_buf)
             return
-        # finalize response (ensures any remaining chunks are processed)
+          # Response finished
+          elif t.endswith('completed') or t == 'response.completed':
+            # If model wrote a code block instead of tool call, run it
+            lang, code = self._extract_last_code_block(content_buf)
+            if lang and code:
+              self._execute_run_code('run_code', json.dumps({"language": lang, "code": code}))
+            return
         _ = stream.get_final_response()
     except BadRequestError:
       # Fallback to non-stream
@@ -279,6 +296,7 @@ class Emplode:
     # Search for tool call
     tool_name = None
     tool_args = None
+    text_accum = ""
     for item in out:
       t = getattr(item, 'type', None)
       if t == 'tool_call':
@@ -288,32 +306,21 @@ class Emplode:
           tool_args = getattr(f, 'arguments', None)
           break
       if t == 'message' and hasattr(item, 'content'):
-        # Plain assistant text
-        text_parts = []
         for c in getattr(item, 'content', []) or []:
           if getattr(c, 'type', None) == 'output_text':
-            text_parts.append(getattr(c, 'text', '') or '')
-        text = ''.join(text_parts)
-        if text:
-          self.end_active_block()
-          self.active_block = MessageBlock()
-          self.active_block.update_from_message({"content": text})
-          self.active_block.end()
-          return
-
+            text_accum += getattr(c, 'text', '') or ''
     if tool_name:
       self._execute_run_code(tool_name, tool_args or "")
       return
-
-    # If we got here, just show best-effort text
-    try:
-      text = getattr(r, 'output_text', '') or ''
-    except Exception:
-      text = ''
-    if text:
+    if text_accum:
+      # Try to run code fence if present
+      lang, code = self._extract_last_code_block(text_accum)
+      if lang and code:
+        self._execute_run_code('run_code', json.dumps({"language": lang, "code": code}))
+        return
       self.end_active_block()
       self.active_block = MessageBlock()
-      self.active_block.update_from_message({"content": text})
+      self.active_block.update_from_message({"content": text_accum})
       self.active_block.end()
 
   def _execute_run_code(self, tool_name, raw_args):
