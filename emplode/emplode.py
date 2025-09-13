@@ -46,14 +46,14 @@ function_schema = {
 
 missing_api_key_message = """> OpenAI API key not found
 
-To use `GPT-4o` (recommended) please provide an OpenAI API key.
+To use `GPT-5` (recommended) please provide an OpenAI API key.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
 
 missing_azure_info_message = """> Azure OpenAI Service API info not found
 
-To use `GPT-4` (recommended) please provide an Azure OpenAI API key, a API base, a deployment name and a API version.
+To use `GPT-5` (recommended) please provide an Azure OpenAI API key, an API base, a deployment name and an API version.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
@@ -73,7 +73,7 @@ class Emplode:
     self.api_key = None
     self.auto_run = False
     self.local = False
-    self.model = "gpt-4o"
+    self.model = "gpt-5"
     self.debug_mode = False
     self.api_base = None 
     self.context_window = 2000 
@@ -264,12 +264,12 @@ class Emplode:
             f"\n\n**Common Fixes:** You can follow our simple setup docs at the link below to resolve common errors.\n\n```\nhttps://github.com/emplodeai/emplode/\n```",
             f"\n\n**If you've tried that and you're still getting an error, we have likely not built the proper `{self.model}` support for your system.**",
             "\n\n*( Running language models locally is a difficult task!* If you have insight into the best way to implement this across platforms/architectures, please join the Emplode community Discord and consider contributing the project's development. )",
-            "\n\nPress enter to switch to `GPT-4o` (recommended)."
+            "\n\nPress enter to switch to `GPT-5` (recommended)."
           ])))
           input()
 
           self.local = False
-          self.model = "gpt-4o"
+          self.model = "gpt-5"
           self.verify_api_key()
 
     welcome_message = ""
@@ -483,33 +483,76 @@ class Emplode:
       
       for _ in range(3): 
         try:
-
+            responses_kwargs = {
+              "input": messages,
+              "reasoning": {"effort": "high"},
+              "tools": [function_schema],
+              "stream": True
+            }
             if self.use_azure:
-              response = litellm.completion(
-                  f"azure/{self.azure_deployment_name}",
-                  messages=messages,
-                  functions=[function_schema],
-                  temperature=self.temperature,
-                  stream=True,
-                  )
+              model_name = f"azure/{self.azure_deployment_name}"
             else:
-              if self.api_base:
-                response = litellm.completion(
-                  api_base=self.api_base,
-                  model = "custom/" + self.model,
-                  messages=messages,
-                  functions=[function_schema],
-                  stream=True,
-                  temperature=self.temperature,
-                )
+              model_name = "custom/" + self.model if self.api_base else self.model
+            response_stream = litellm.responses(
+              model=model_name,
+              **responses_kwargs
+            )
+            def _event_text_iter(ev_stream):
+              try:
+                for ev in ev_stream:
+                  try:
+                    if hasattr(ev, "delta") and hasattr(ev.delta, "content"):
+                      for c in ev.delta.content:
+                        if hasattr(c, "text") and c.text:
+                          yield c.text
+                    elif hasattr(ev, "output") and ev.output:
+                      for item in ev.output:
+                        if hasattr(item, "content"):
+                          for c in item.content:
+                            if hasattr(c, "text") and c.text:
+                              yield c.text
+                  except Exception:
+                    continue
+              except Exception:
+                return
+            def _chunk_gen():
+              any_text = False
+              for txt in _event_text_iter(response_stream):
+                any_text = True
+                yield {"choices": [{"delta": {"content": txt}, "finish_reason": None}]}
+              yield {"choices": [{"delta": {"content": "" if any_text else ""}, "finish_reason": "stop"}]}
+            response = _chunk_gen()
+
+            responses_kwargs = {
+              "input": messages,
+              "reasoning": {"effort": "high"},
+              "tools": [function_schema]
+            }
+            if self.use_azure:
+              model_name = f"azure/{self.azure_deployment_name}"
+            else:
+              model_name = "custom/" + self.model if self.api_base else self.model
+            response_obj = litellm.responses(
+              model=model_name,
+              **responses_kwargs
+            )
+            extracted_text = ""
+            try:
+              if hasattr(response_obj, "output"):
+                for item in response_obj.output:
+                  if hasattr(item, "content"):
+                    for c in item.content:
+                      if hasattr(c, "text"):
+                        extracted_text += c.text
+              elif hasattr(response_obj, "output_text"):
+                extracted_text = response_obj.output_text
               else:
-                response = litellm.completion(
-                  model=self.model,
-                  messages=messages,
-                  functions=[function_schema],
-                  stream=True,
-                  temperature=self.temperature,
-                )
+                extracted_text = str(response_obj)
+            except Exception:
+              extracted_text = str(response_obj)
+            response = [
+              {"choices": [{"delta": {"content": extracted_text}, "finish_reason": "stop"}]}
+            ]
 
             break
         except:
