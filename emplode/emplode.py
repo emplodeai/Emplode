@@ -53,7 +53,7 @@ To use `Code-Llama` (free but less capable) press `enter`.
 
 missing_azure_info_message = """> Azure OpenAI Service API info not found
 
-To use `GPT-4` (recommended) please provide an Azure OpenAI API key, a API base, a deployment name and a API version.
+To use `GPT-5` (recommended) please provide an Azure OpenAI API key, an API base, a deployment name and an API version.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
@@ -483,6 +483,45 @@ class Emplode:
       
       for _ in range(3): 
         try:
+            responses_kwargs = {
+              "input": messages,
+              "reasoning": {"effort": "high"},
+              "tools": [function_schema],
+              "stream": True
+            }
+            if self.use_azure:
+              model_name = f"azure/{self.azure_deployment_name}"
+            else:
+              model_name = "custom/" + self.model if self.api_base else self.model
+            response_stream = litellm.responses(
+              model=model_name,
+              **responses_kwargs
+            )
+            def _event_text_iter(ev_stream):
+              try:
+                for ev in ev_stream:
+                  try:
+                    if hasattr(ev, "delta") and hasattr(ev.delta, "content"):
+                      for c in ev.delta.content:
+                        if hasattr(c, "text") and c.text:
+                          yield c.text
+                    elif hasattr(ev, "output") and ev.output:
+                      for item in ev.output:
+                        if hasattr(item, "content"):
+                          for c in item.content:
+                            if hasattr(c, "text") and c.text:
+                              yield c.text
+                  except Exception:
+                    continue
+              except Exception:
+                return
+            def _chunk_gen():
+              any_text = False
+              for txt in _event_text_iter(response_stream):
+                any_text = True
+                yield {"choices": [{"delta": {"content": txt}, "finish_reason": None}]}
+              yield {"choices": [{"delta": {"content": "" if any_text else ""}, "finish_reason": "stop"}]}
+            response = _chunk_gen()
 
             responses_kwargs = {
               "input": messages,
