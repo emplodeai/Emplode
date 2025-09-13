@@ -46,14 +46,14 @@ function_schema = {
 
 missing_api_key_message = """> OpenAI API key not found
 
-To use `GPT-4o` (recommended) please provide an OpenAI API key.
+To use `GPT-5` (recommended) please provide an OpenAI API key.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
 
 missing_azure_info_message = """> Azure OpenAI Service API info not found
 
-To use `GPT-4` (recommended) please provide an Azure OpenAI API key, a API base, a deployment name and a API version.
+To use `GPT-5` (recommended) please provide an Azure OpenAI API key, a API base, a deployment name and a API version.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
@@ -73,7 +73,7 @@ class Emplode:
     self.api_key = None
     self.auto_run = False
     self.local = False
-    self.model = "gpt-4o"
+    self.model = "gpt-5"
     self.debug_mode = False
     self.api_base = None 
     self.context_window = 2000 
@@ -264,12 +264,12 @@ class Emplode:
             f"\n\n**Common Fixes:** You can follow our simple setup docs at the link below to resolve common errors.\n\n```\nhttps://github.com/emplodeai/emplode/\n```",
             f"\n\n**If you've tried that and you're still getting an error, we have likely not built the proper `{self.model}` support for your system.**",
             "\n\n*( Running language models locally is a difficult task!* If you have insight into the best way to implement this across platforms/architectures, please join the Emplode community Discord and consider contributing the project's development. )",
-            "\n\nPress enter to switch to `GPT-4o` (recommended)."
+            "\n\nPress enter to switch to `GPT-5` (recommended)."
           ])))
           input()
 
           self.local = False
-          self.model = "gpt-4o"
+          self.model = "gpt-5"
           self.verify_api_key()
 
     welcome_message = ""
@@ -485,30 +485,51 @@ class Emplode:
         try:
 
             if self.use_azure:
-              response = litellm.completion(
-                  f"azure/{self.azure_deployment_name}",
-                  messages=messages,
-                  functions=[function_schema],
+              tools = [{
+                "type": "custom",
+                "name": "run_code",
+                "description": "Executes code in an isolated environment and returns stdout/stderr.",
+                "parameters": function_schema.get("parameters", {})
+              }]
+              response = litellm.responses(
+                  model=f"azure/{self.azure_deployment_name}",
+                  input=messages,
+                  tools=tools,
                   temperature=self.temperature,
                   stream=True,
+                  reasoning={"effort": "high"},
                   )
             else:
               if self.api_base:
-                response = litellm.completion(
+                tools = [{
+                  "type": "custom",
+                  "name": "run_code",
+                  "description": "Executes code in an isolated environment and returns stdout/stderr.",
+                  "parameters": function_schema.get("parameters", {})
+                }]
+                response = litellm.responses(
                   api_base=self.api_base,
                   model = "custom/" + self.model,
-                  messages=messages,
-                  functions=[function_schema],
+                  input=messages,
+                  tools=tools,
                   stream=True,
                   temperature=self.temperature,
+                  reasoning={"effort": "high"},
                 )
               else:
-                response = litellm.completion(
+                tools = [{
+                  "type": "custom",
+                  "name": "run_code",
+                  "description": "Executes code in an isolated environment and returns stdout/stderr.",
+                  "parameters": function_schema.get("parameters", {})
+                }]
+                response = litellm.responses(
                   model=self.model,
-                  messages=messages,
-                  functions=[function_schema],
+                  input=messages,
+                  tools=tools,
                   stream=True,
                   temperature=self.temperature,
+                  reasoning={"effort": "high"},
                 )
 
             break
@@ -584,6 +605,25 @@ class Emplode:
     self.active_block = None
 
     for chunk in response:
+      if not self.local:
+        if isinstance(chunk, dict) and 'choices' not in chunk:
+          t = chunk.get('type') or chunk.get('event')
+          normalized = None
+          if t:
+            if 'output_text.delta' in t or 'message.delta' in t:
+              text = chunk.get('delta') or chunk.get('text') or chunk.get('output_text_delta') or (chunk.get('data', {}) or {}).get('delta') or ''
+              normalized = {'choices': [{'delta': {'content': text}, 'finish_reason': None}]}
+            elif 'function_call.arguments.delta' in t or 'tool_call.arguments.delta' in t or ('function_call' in t and 'delta' in chunk):
+              args = chunk.get('delta') or chunk.get('arguments_delta') or (chunk.get('data', {}) or {}).get('delta') or ''
+              name = chunk.get('name', 'run_code')
+              normalized = {'choices': [{'delta': {'function_call': {'name': name, 'arguments': args}}, 'finish_reason': None}]}
+            elif t and 'function_call.completed' in t:
+              normalized = {'choices': [{'delta': {}, 'finish_reason': 'function_call'}]}
+            elif t and (t.endswith('.completed') or t.endswith('.done') or t == 'response.completed'):
+              normalized = {'choices': [{'delta': {}, 'finish_reason': 'stop'}]}
+          if normalized:
+            chunk = normalized
+      
       if self.use_azure and ('choices' not in chunk or len(chunk['choices']) == 0):
         continue
 
