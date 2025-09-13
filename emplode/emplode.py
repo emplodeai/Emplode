@@ -46,7 +46,7 @@ function_schema = {
 
 missing_api_key_message = """> OpenAI API key not found
 
-To use `GPT-4o` (recommended) please provide an OpenAI API key.
+To use `GPT-5` (recommended) please provide an OpenAI API key.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
@@ -264,7 +264,7 @@ class Emplode:
             f"\n\n**Common Fixes:** You can follow our simple setup docs at the link below to resolve common errors.\n\n```\nhttps://github.com/emplodeai/emplode/\n```",
             f"\n\n**If you've tried that and you're still getting an error, we have likely not built the proper `{self.model}` support for your system.**",
             "\n\n*( Running language models locally is a difficult task!* If you have insight into the best way to implement this across platforms/architectures, please join the Emplode community Discord and consider contributing the project's development. )",
-            "\n\nPress enter to switch to `GPT-4o` (recommended)."
+            "\n\nPress enter to switch to `GPT-5` (recommended)."
           ])))
           input()
 
