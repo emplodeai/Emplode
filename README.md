@@ -48,16 +48,17 @@ emplode.chat() # Starts an interactive chat
 
 ### Change the Model
 
-For `gpt-3.5-turbo`, use fast mode:
+- Default model is `gpt-5`.
+- For `gpt-5-nano`, use fast mode:
 
 ```shell
 emplode --fast
 ```
 
-In Python, you will need to set the model manually:
+In Python, you can set the model manually:
 
 ```python
-emplode.model = "gpt-3.5-turbo"
+emplode.model = "gpt-5-nano"
 ```
 
 ### Running Emplode locally

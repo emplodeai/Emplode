@@ -73,7 +73,7 @@ class Emplode:
     self.api_key = None
     self.auto_run = False
     self.local = False
-    self.model = "gpt-4o"
+    self.model = "gpt-5"
     self.debug_mode = False
     self.api_base = None 
     self.context_window = 2000 
@@ -269,7 +269,7 @@ class Emplode:
           input()
 
           self.local = False
-          self.model = "gpt-4o"
+          self.model = "gpt-5"
           self.verify_api_key()
 
     welcome_message = ""
@@ -484,32 +484,36 @@ class Emplode:
       for _ in range(3): 
         try:
 
+            responses_kwargs = {
+              "input": messages,
+              "reasoning": {"effort": "high"},
+              "tools": [function_schema]
+            }
             if self.use_azure:
-              response = litellm.completion(
-                  f"azure/{self.azure_deployment_name}",
-                  messages=messages,
-                  functions=[function_schema],
-                  temperature=self.temperature,
-                  stream=True,
-                  )
+              model_name = f"azure/{self.azure_deployment_name}"
             else:
-              if self.api_base:
-                response = litellm.completion(
-                  api_base=self.api_base,
-                  model = "custom/" + self.model,
-                  messages=messages,
-                  functions=[function_schema],
-                  stream=True,
-                  temperature=self.temperature,
-                )
+              model_name = "custom/" + self.model if self.api_base else self.model
+            response_obj = litellm.responses(
+              model=model_name,
+              **responses_kwargs
+            )
+            extracted_text = ""
+            try:
+              if hasattr(response_obj, "output"):
+                for item in response_obj.output:
+                  if hasattr(item, "content"):
+                    for c in item.content:
+                      if hasattr(c, "text"):
+                        extracted_text += c.text
+              elif hasattr(response_obj, "output_text"):
+                extracted_text = response_obj.output_text
               else:
-                response = litellm.completion(
-                  model=self.model,
-                  messages=messages,
-                  functions=[function_schema],
-                  stream=True,
-                  temperature=self.temperature,
-                )
+                extracted_text = str(response_obj)
+            except Exception:
+              extracted_text = str(response_obj)
+            response = [
+              {"choices": [{"delta": {"content": extracted_text}, "finish_reason": "stop"}]}
+            ]
 
             break
         except:
