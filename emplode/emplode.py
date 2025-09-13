@@ -470,7 +470,15 @@ class Emplode:
     if self.local:
       messages = tt.trim(self.messages, max_tokens=(self.context_window-self.max_tokens-25), system_message=system_message)
     else:
-      messages = tt.trim(self.messages, self.model, system_message=system_message)
+      try:
+        messages = tt.trim(self.messages, self.model, system_message=system_message)
+      except Exception:
+        try:
+          messages = tt.trim(self.messages, "gpt-4o", system_message=system_message)
+        except Exception:
+          remote_window = int(os.environ.get("EMPLODE_REMOTE_CONTEXT_WINDOW", "128000"))
+          budget = max(512, remote_window - self.max_tokens - 1000)
+          messages = tt.trim(self.messages, max_tokens=budget, system_message=system_message)
 
     if self.debug_mode:
       print("\n", "Sending `messages` to LLM:", "\n")
