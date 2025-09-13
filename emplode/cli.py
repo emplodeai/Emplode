@@ -43,7 +43,7 @@ def cli(emplode):
                       '--fast',
                       action='store_true',
                       default=FAST_MODE,
-                      help='use gpt-4o-mini instead of gpt-4o')
+                      help='use gpt-5-nano instead of gpt-5')
   parser.add_argument('-l',
                       '--local',
                       action='store_true',
@@ -103,7 +103,7 @@ def cli(emplode):
   if args.yes:
     emplode.auto_run = True
   if args.fast:
-    emplode.model = "gpt-4o-mini"
+    emplode.model = "gpt-5-nano"
   if args.local and not args.falcon:
     
     rprint('', Markdown("**Emplode** will use `Code Llama` for local execution."), '')

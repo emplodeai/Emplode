@@ -46,14 +46,14 @@ function_schema = {
 
 missing_api_key_message = """> OpenAI API key not found
 
-To use `GPT-4o` (recommended) please provide an OpenAI API key.
+To use `GPT-5` (recommended) please provide an OpenAI API key.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
 
 missing_azure_info_message = """> Azure OpenAI Service API info not found
 
-To use `GPT-4` (recommended) please provide an Azure OpenAI API key, a API base, a deployment name and a API version.
+To use `GPT-5` (recommended) please provide an Azure OpenAI API key, an API base, a deployment name and an API version.
 
 To use `Code-Llama` (free but less capable) press `enter`.
 """
@@ -73,7 +73,7 @@ class Emplode:
     self.api_key = None
     self.auto_run = False
     self.local = False
-    self.model = "gpt-4o"
+    self.model = "gpt-5"
     self.debug_mode = False
     self.api_base = None 
     self.context_window = 2000 
@@ -264,12 +264,12 @@ class Emplode:
             f"\n\n**Common Fixes:** You can follow our simple setup docs at the link below to resolve common errors.\n\n```\nhttps://github.com/emplodeai/emplode/\n```",
             f"\n\n**If you've tried that and you're still getting an error, we have likely not built the proper `{self.model}` support for your system.**",
             "\n\n*( Running language models locally is a difficult task!* If you have insight into the best way to implement this across platforms/architectures, please join the Emplode community Discord and consider contributing the project's development. )",
-            "\n\nPress enter to switch to `GPT-4o` (recommended)."
+            "\n\nPress enter to switch to `GPT-5` (recommended)."
           ])))
           input()
 
           self.local = False
-          self.model = "gpt-4o"
+          self.model = "gpt-5"
           self.verify_api_key()
 
     welcome_message = ""
@@ -478,83 +478,209 @@ class Emplode:
       print()
 
     if not self.local:
-      
       error = ""
-      
-      for _ in range(3): 
+      for _ in range(3):
         try:
-
-            if self.use_azure:
-              response = litellm.completion(
-                  f"azure/{self.azure_deployment_name}",
-                  messages=messages,
-                  functions=[function_schema],
-                  temperature=self.temperature,
-                  stream=True,
-                  )
+          tools = [
+            {
+              "type": "custom",
+              "name": "run_code",
+              "description": "Executes code on the user's machine. JSON args: {language: 'python'|'R'|'shell'|'applescript'|'javascript'|'html', code: string}"
+            }
+          ]
+          if self.use_azure:
+            response = litellm.responses(
+              model=f"azure/{self.azure_deployment_name}",
+              input=messages,
+              tools=tools,
+              temperature=self.temperature,
+              max_output_tokens=self.max_tokens,
+              reasoning={"effort": "high"}
+            )
+          else:
+            if self.api_base:
+              response = litellm.responses(
+                api_base=self.api_base,
+                model="custom/" + self.model,
+                input=messages,
+                tools=tools,
+                temperature=self.temperature,
+                max_output_tokens=self.max_tokens,
+                reasoning={"effort": "high"}
+              )
             else:
-              if self.api_base:
-                response = litellm.completion(
-                  api_base=self.api_base,
-                  model = "custom/" + self.model,
-                  messages=messages,
-                  functions=[function_schema],
-                  stream=True,
-                  temperature=self.temperature,
-                )
-              else:
-                response = litellm.completion(
-                  model=self.model,
-                  messages=messages,
-                  functions=[function_schema],
-                  stream=True,
-                  temperature=self.temperature,
-                )
-
-            break
+              response = litellm.responses(
+                model=self.model,
+                input=messages,
+                tools=tools,
+                temperature=self.temperature,
+                max_output_tokens=self.max_tokens,
+                reasoning={"effort": "high"}
+              )
+          break
         except:
-            if self.debug_mode:
-              traceback.print_exc()
-            error = traceback.format_exc()
-            time.sleep(3)
+          if self.debug_mode:
+            traceback.print_exc()
+          error = traceback.format_exc()
+          time.sleep(3)
       else:
         raise Exception(error)
-            
-    elif self.local:
 
+      def extract_output_and_tool(resp):
+        output_text = ""
+        tool_args = None
+        try:
+          outputs = getattr(resp, 'output', None)
+          if outputs is None and isinstance(resp, dict):
+            outputs = resp.get('output')
+          if outputs:
+            for item in outputs:
+              typ = getattr(item, 'type', None)
+              if typ is None and isinstance(item, dict):
+                typ = item.get('type')
+              # collect text
+              try:
+                content_list = getattr(item, 'content', None)
+                if content_list is None and isinstance(item, dict):
+                  content_list = item.get('content')
+                if isinstance(content_list, list):
+                  for content in content_list:
+                    if hasattr(content, 'text'):
+                      output_text += getattr(content, 'text') or ""
+                    elif isinstance(content, dict) and 'text' in content:
+                      output_text += content.get('text') or ""
+                elif hasattr(item, 'text'):
+                  output_text += getattr(item, 'text') or ""
+              except Exception:
+                pass
+              # detect tool call
+              name = getattr(item, 'name', None)
+              if name is None and isinstance(item, dict):
+                name = item.get('name')
+              if name == 'run_code' or (typ and 'tool' in str(typ).lower() and name):
+                data = getattr(item, 'input', None)
+                if data is None:
+                  data = getattr(item, 'arguments', None)
+                if data is None and isinstance(item, dict):
+                  data = item.get('input') or item.get('arguments')
+                if isinstance(data, str):
+                  try:
+                    tool_args = json.loads(data)
+                  except Exception:
+                    tool_args = None
+                elif isinstance(data, dict):
+                  tool_args = data
+        except Exception:
+          if self.debug_mode:
+            traceback.print_exc()
+        return output_text, tool_args
+
+      def extract_code_block(text):
+        if "```" not in text:
+          return None
+        parts = text.split("```")
+        # find last code block (odd index)
+        last = None
+        for i in range(len(parts)-1, 0, -1):
+          if i % 2 == 1:
+            last = parts[i]
+            break
+        if last is None:
+          return None
+        lines = last.split("\n")
+        if len(lines) == 0:
+          return None
+        first = lines[0].strip()
+        if first == "":
+          language = "python"
+          if len(lines) > 1 and lines[1].startswith("pip"):
+            language = "shell"
+        else:
+          language = first
+        if language == "bash":
+          language = "shell"
+        code = "\n".join(lines[1:]).strip("` \n")
+        if not code:
+          return None
+        return {"language": language, "code": code}
+
+      output_text, tool_args = extract_output_and_tool(response)
+      assistant_message = {"role": "assistant"}
+      if output_text:
+        assistant_message["content"] = output_text
+      code_args = tool_args or extract_code_block(output_text or "")
+      if code_args:
+        assistant_message["function_call"] = {"parsed_arguments": code_args}
+      self.messages.append(assistant_message)
+
+      if "function_call" in assistant_message:
+        self.end_active_block()
+        if len(self.messages) >= 2:
+          last_role = self.messages[-2].get("role")
+          if last_role == "user" or last_role == "function":
+            print()
+        self.active_block = CodeBlock()
+        self.active_block.update_from_message(self.messages[-1])
+
+        if self.auto_run == False:
+          language = self.active_block.language
+          code = self.active_block.code
+          response_input = input("  Would you like to run this code? (y/n)\n\n  ")
+          print("")
+          if response_input.strip().lower() != "y":
+            self.active_block.end()
+            self.messages.append({
+              "role": "function",
+              "name": "run_code",
+              "content": "User decided not to run this code."
+            })
+            return
+
+        language = self.messages[-1]["function_call"]["parsed_arguments"].get("language")
+        if language not in self.code_emplodes:
+          self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
+        code_emplode = self.code_emplodes[language]
+        code_emplode.active_block = self.active_block
+        code_emplode.run()
+        self.active_block.end()
+        self.messages.append({
+          "role": "function",
+          "name": "run_code",
+          "content": self.active_block.output if self.active_block.output else "No output"
+        })
+        self.respond()
+        return
+      else:
+        self.active_block = MessageBlock()
+        self.active_block.update_from_message(self.messages[-1])
+        self.active_block.end()
+        return
+
+    else:
+      # local mode - keep existing local streaming behavior
       def messages_to_prompt(messages):
-
-
         for message in messages:
           if "role" not in message:
             message["role"] = "assistant"
-
         if "falcon" in self.model.lower():
-
           formatted_messages = ""
           for message in messages:
             formatted_messages += f"{message['role'].capitalize()}: {message['content']}\n"
           formatted_messages = formatted_messages.strip()
-
         else:
-          
           system_prompt = messages[0]['content']
           formatted_messages = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n"
-
           for index, item in enumerate(messages[1:]):
-              role = item['role']
-              content = item['content']
-
-              if role == 'user':
-                  formatted_messages += f"{content} [/INST] "
-              elif role == 'function':
-                  formatted_messages += f"Output: {content} [/INST] "
-              elif role == 'assistant':
-                  formatted_messages += f"{content} </s><s>[INST] "
-
+            role = item['role']
+            content = item['content']
+            if role == 'user':
+              formatted_messages += f"{content} [/INST] "
+            elif role == 'function':
+              formatted_messages += f"Output: {content} [/INST] "
+            elif role == 'assistant':
+              formatted_messages += f"{content} </s><s>[INST] "
           if formatted_messages.endswith("<s>[INST] "):
-              formatted_messages = formatted_messages[:-10]
-
+            formatted_messages = formatted_messages[:-10]
         return formatted_messages
 
       prompt = messages_to_prompt(messages)
@@ -565,7 +691,6 @@ class Emplode:
       elif messages[-1]["role"] == "function" and messages[-1]["content"] == "No output":
         prompt += "Given the fact that the code I just ran produced no output, "
 
-
       if self.debug_mode:
         import builtins
         builtins.print("TEXT PROMPT SEND TO LLM:\n", prompt)
@@ -575,70 +700,41 @@ class Emplode:
         stream=True,
         temperature=self.temperature,
         stop=["</s>"],
-        max_tokens=750 
+        max_tokens=750
       )
 
-    self.messages.append({})
-    in_function_call = False
-    llama_function_call_finished = False
-    self.active_block = None
+      self.messages.append({})
+      in_function_call = False
+      llama_function_call_finished = False
+      self.active_block = None
 
-    for chunk in response:
-      if self.use_azure and ('choices' not in chunk or len(chunk['choices']) == 0):
-        continue
-
-      if self.local:
+      for chunk in response:
+        if self.use_azure and ('choices' not in chunk or len(chunk['choices']) == 0):
+          continue
         if "content" not in messages[-1]:
           chunk["choices"][0]["text"] = chunk["choices"][0]["text"].capitalize()
           messages[-1]["role"] = "assistant"
         delta = {"content": chunk["choices"][0]["text"]}
-      else:
-        delta = chunk["choices"][0]["delta"]
-
-      self.messages[-1] = merge_deltas(self.messages[-1], delta)
-
-      if not self.local:
-        condition = "function_call" in self.messages[-1]
-      elif self.local:
+        self.messages[-1] = merge_deltas(self.messages[-1], delta)
         if "content" in self.messages[-1]:
           condition = self.messages[-1]["content"].count("```") % 2 == 1
         else:
           condition = False
-
-      if condition:
-        if in_function_call == False:
-
-          self.end_active_block()
-
-          last_role = self.messages[-2]["role"]
-          if last_role == "user" or last_role == "function":
-            print()
-
-          self.active_block = CodeBlock()
-
-        in_function_call = True
-
-        if not self.local:
-          if "arguments" in self.messages[-1]["function_call"]:
-            arguments = self.messages[-1]["function_call"]["arguments"]
-            new_parsed_arguments = parse_partial_json(arguments)
-            if new_parsed_arguments:
-              self.messages[-1]["function_call"][
-                "parsed_arguments"] = new_parsed_arguments
-
-        elif self.local:
+        if condition:
+          if in_function_call == False:
+            self.end_active_block()
+            last_role = self.messages[-2]["role"]
+            if last_role == "user" or last_role == "function":
+              print()
+            self.active_block = CodeBlock()
+          in_function_call = True
           if "content" in self.messages[-1]:
-
             content = self.messages[-1]["content"]
-
             if "```" in content:
               blocks = content.split("```")
-
               current_code_block = blocks[-1]
-
               lines = current_code_block.split("\n")
-
-              if content.strip() == "```": 
+              if content.strip() == "```":
                 language = None
               else:
                 if lines[0] != "":
@@ -648,109 +744,62 @@ class Emplode:
                   if len(lines) > 1:
                     if lines[1].startswith("pip"):
                       language = "shell"
-
               code = '\n'.join(lines[1:]).strip("` \n")
-
               arguments = {"code": code}
-              if language: 
+              if language:
                 if language == "bash":
                   language = "shell"
                 arguments["language"] = language
-
             if "function_call" not in self.messages[-1]:
               self.messages[-1]["function_call"] = {}
-
             self.messages[-1]["function_call"]["parsed_arguments"] = arguments
-
-      else:
-        if in_function_call == True:
-
-          if self.local:
-          
+        else:
+          if in_function_call == True:
             llama_function_call_finished = True
-
-        in_function_call = False
-
-        if self.active_block == None:
-
-          self.active_block = MessageBlock()
-
-      self.active_block.update_from_message(self.messages[-1])
-
-      if chunk["choices"][0]["finish_reason"] or llama_function_call_finished:
-        if chunk["choices"][
-            0]["finish_reason"] == "function_call" or llama_function_call_finished:
-
-          if self.debug_mode:
-            print("Running function:")
-            print(self.messages[-1])
-            print("---")
-
-          if self.auto_run == False:
-
-            self.active_block.end()
-            language = self.active_block.language
-            code = self.active_block.code
-
-            response = input("  Would you like to run this code? (y/n)\n\n  ")
-            print("")
-
-            if response.strip().lower() == "y":
-              self.active_block = CodeBlock()
-              self.active_block.language = language
-              self.active_block.code = code
-
-            else:
+          in_function_call = False
+          if self.active_block == None:
+            self.active_block = MessageBlock()
+        self.active_block.update_from_message(self.messages[-1])
+        if chunk["choices"][0]["finish_reason"] or llama_function_call_finished:
+          if llama_function_call_finished:
+            if self.debug_mode:
+              print("Running function:")
+              print(self.messages[-1])
+              print("---")
+            if self.auto_run == False:
               self.active_block.end()
-              self.messages.append({
-                "role":
-                "function",
-                "name":
-                "run_code",
-                "content":
-                "User decided not to run this code."
-              })
-              return
-
-          if not self.local and "parsed_arguments" not in self.messages[-1]["function_call"]:
-
+              language = self.active_block.language
+              code = self.active_block.code
+              response_input = input("  Would you like to run this code? (y/n)\n\n  ")
+              print("")
+              if response_input.strip().lower() != "y":
+                self.active_block.end()
+                self.messages.append({
+                  "role": "function",
+                  "name": "run_code",
+                  "content": "User decided not to run this code."
+                })
+                return
+            language = self.messages[-1]["function_call"]["parsed_arguments"]["language"]
+            if language not in self.code_emplodes:
+              self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
+            code_emplode = self.code_emplodes[language]
+            code_emplode.active_block = self.active_block
+            code_emplode.run()
+            self.active_block.end()
             self.messages.append({
               "role": "function",
               "name": "run_code",
-              "content": """Your function call could not be parsed. Please use ONLY the `run_code` function, which takes two parameters: `code` and `language`. Your response should be formatted as a JSON."""
+              "content": self.active_block.output if self.active_block.output else "No output"
             })
-
             self.respond()
+          if not llama_function_call_finished:
+            if "content" in self.messages[-1]:
+              self.messages[-1]["content"] = self.messages[-1]["content"].strip().rstrip("#")
+              self.active_block.update_from_message(self.messages[-1])
+              time.sleep(0.1)
+            self.active_block.end()
             return
-
-          language = self.messages[-1]["function_call"]["parsed_arguments"][
-            "language"]
-          if language not in self.code_emplodes:
-            self.code_emplodes[language] = CodeEmplode(language, self.debug_mode)
-          code_emplode = self.code_emplodes[language]
-
-          code_emplode.active_block = self.active_block
-          code_emplode.run()
-
-          self.active_block.end()
-
-          self.messages.append({
-            "role": "function",
-            "name": "run_code",
-            "content": self.active_block.output if self.active_block.output else "No output"
-          })
-
-          self.respond()
-
-        if chunk["choices"][0]["finish_reason"] != "function_call":
-
-          if self.local and "content" in self.messages[-1]:
-            self.messages[-1]["content"] = self.messages[-1]["content"].strip().rstrip("#")
-            self.active_block.update_from_message(self.messages[-1])
-            time.sleep(0.1)
-
-          self.active_block.end()
-          return
 
   def _print_welcome_message(self):
     print("", "", Markdown(f"\nWelcome to **Emplode**.\n"), "")
