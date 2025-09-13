@@ -501,7 +501,6 @@ class Emplode:
               model=f"azure/{self.azure_deployment_name}",
               input=messages,
               tools=tools,
-              temperature=self.temperature,
               max_output_tokens=self.max_tokens,
               reasoning={"effort": "high"}
             )
@@ -512,7 +511,6 @@ class Emplode:
                 model="custom/" + self.model,
                 input=messages,
                 tools=tools,
-                temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
                 reasoning={"effort": "high"}
               )
@@ -521,7 +519,6 @@ class Emplode:
                 model=self.model,
                 input=messages,
                 tools=tools,
-                temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
                 reasoning={"effort": "high"}
               )
