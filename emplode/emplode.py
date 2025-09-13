@@ -496,10 +496,37 @@ class Emplode:
               "description": "Executes code on the user's machine. JSON args: {language: 'python'|'R'|'shell'|'applescript'|'javascript'|'html', code: string}"
             }
           ]
+
+          def _to_responses_input(msgs):
+            resp = []
+            for m in msgs:
+              role = m.get("role", "user")
+              content = m.get("content", "")
+              if role == "system":
+                role2 = "developer"
+              elif role == "function":
+                name = m.get("name", "run_code")
+                cont = m.get("content", "")
+                if not cont:
+                  continue
+                content = f"[Tool {name} output]\n{cont}"
+                role2 = "user"
+              else:
+                role2 = role
+              if content is None:
+                content = ""
+              content = str(content)
+              if content.strip() == "":
+                continue
+              resp.append({"role": role2, "content": content})
+            return resp
+
+          responses_input = _to_responses_input(messages)
+
           if self.use_azure:
             response = litellm.responses(
               model=f"azure/{self.azure_deployment_name}",
-              input=messages,
+              input=responses_input,
               tools=tools,
               max_output_tokens=self.max_tokens,
               reasoning={"effort": "high"}
@@ -509,7 +536,7 @@ class Emplode:
               response = litellm.responses(
                 api_base=self.api_base,
                 model="custom/" + self.model,
-                input=messages,
+                input=responses_input,
                 tools=tools,
                 max_output_tokens=self.max_tokens,
                 reasoning={"effort": "high"}
@@ -517,7 +544,7 @@ class Emplode:
             else:
               response = litellm.responses(
                 model=self.model,
-                input=messages,
+                input=responses_input,
                 tools=tools,
                 max_output_tokens=self.max_tokens,
                 reasoning={"effort": "high"}
